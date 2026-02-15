@@ -1,0 +1,123 @@
+CREATE OR ALTER PROCEDURE TEST.usp_load_stage_customer_order_delta
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @last_customer_inserted_at DATETIME;
+    DECLARE @last_order_inserted_at    DATETIME;
+
+    SELECT
+        @last_customer_inserted_at = MAX(customer_inserted_at),
+        @last_order_inserted_at    = MAX(order_inserted_at)
+    FROM TEST.stage_customer_order;
+
+    SET @last_customer_inserted_at = ISNULL(@last_customer_inserted_at, '1900-01-01');
+    SET @last_order_inserted_at    = ISNULL(@last_order_inserted_at, '1900-01-01');
+
+    ;WITH changed_keys AS (
+        SELECT DISTINCT customer_id
+        FROM TEST.raw_customer
+        WHERE inserted_at > @last_customer_inserted_at
+
+        UNION
+
+        SELECT DISTINCT customer_id
+        FROM TEST.raw_order
+        WHERE inserted_at > @last_order_inserted_at
+    ),
+    latest_customer AS (
+        SELECT *
+        FROM (
+            SELECT *,
+                   ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY inserted_at DESC) AS rn
+            FROM TEST.raw_customer
+        ) x
+        WHERE rn = 1
+    ),
+    latest_order AS (
+        SELECT *
+        FROM (
+            SELECT *,
+                   ROW_NUMBER() OVER (PARTITION BY order_id ORDER BY inserted_at DESC) AS rn
+            FROM TEST.raw_order
+        ) x
+        WHERE rn = 1
+    )
+    MERGE TEST.stage_customer_order AS tgt
+    USING (
+        SELECT
+            c.customer_id,
+            o.order_id,
+            c.first_name + ' ' + c.last_name AS full_name,
+            c.email,
+            c.city,
+            o.order_date,
+            o.amount,
+            o.status,
+            CASE 
+                WHEN c.updated_at > o.updated_at THEN c.updated_at 
+                ELSE o.updated_at 
+            END AS last_update,
+            c.inserted_at AS customer_inserted_at,
+            o.inserted_at AS order_inserted_at,
+            HASHBYTES(
+                'SHA2_256',
+                CONCAT(
+                    c.first_name, '|', c.last_name, '|', c.email, '|', c.city, '|',
+                    o.order_date, '|', o.amount, '|', o.status
+                )
+            ) AS row_hash
+        FROM changed_keys k
+        JOIN latest_customer c
+            ON k.customer_id = c.customer_id
+        JOIN latest_order o
+            ON c.customer_id = o.customer_id
+    ) AS src
+    ON (tgt.customer_id = src.customer_id AND tgt.order_id = src.order_id)
+
+    WHEN MATCHED 
+         AND tgt.row_hash <> src.row_hash THEN
+        UPDATE SET
+            tgt.full_name            = src.full_name,
+            tgt.email                = src.email,
+            tgt.city                 = src.city,
+            tgt.order_date           = src.order_date,
+            tgt.amount               = src.amount,
+            tgt.status               = src.status,
+            tgt.last_update          = src.last_update,
+            tgt.customer_inserted_at = src.customer_inserted_at,
+            tgt.order_inserted_at    = src.order_inserted_at,
+            tgt.row_hash             = src.row_hash
+
+    WHEN NOT MATCHED BY TARGET THEN
+        INSERT (
+            customer_id,
+            order_id,
+            full_name,
+            email,
+            city,
+            order_date,
+            amount,
+            status,
+            last_update,
+            customer_inserted_at,
+            order_inserted_at,
+            row_hash
+        )
+        VALUES (
+            src.customer_id,
+            src.order_id,
+            src.full_name,
+            src.email,
+            src.city,
+            src.order_date,
+            src.amount,
+            src.status,
+            src.last_update,
+            src.customer_inserted_at,
+            src.order_inserted_at,
+            src.row_hash
+        );
+
+END;
+GO
