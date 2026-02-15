@@ -1,0 +1,189 @@
+1.Raw tables (DDL)
+
+CREATE TABLE dbo.raw_customer (
+    customer_id INT,
+    first_name   VARCHAR(50),
+    last_name    VARCHAR(50),
+    email        VARCHAR(100),
+    city         VARCHAR(50),
+    updated_at   DATETIME
+);
+
+CREATE TABLE dbo.raw_order (
+    order_id     INT,
+    customer_id  INT,
+    order_date   DATE,
+    amount       DECIMAL(10,2),
+    status       VARCHAR(20),
+    updated_at   DATETIME
+);
+
+
+INSERT INTO dbo.raw_customer VALUES
+(1, 'Rohit', 'Sharma', 'RS@test.com', 'Hyderabad', '2026-02-01'),
+(2, 'Ravi',   'Kumar', 'ravi@test.com',   'Bangalore', '2026-02-01');
+
+INSERT INTO dbo.raw_order VALUES
+(101, 1, '2026-02-10', 1500.00, 'NEW', '2026-02-10'),
+(102, 2, '2026-02-11', 2200.00, 'NEW', '2026-02-11');
+
+
+
+2.Staging table (DDL)
+
+CREATE TABLE dbo.stage_customer_order (
+    customer_id INT,
+    order_id    INT,
+    full_name   VARCHAR(120),
+    email       VARCHAR(100),
+    city        VARCHAR(50),
+    order_date  DATE,
+    amount      DECIMAL(10,2),
+    status      VARCHAR(20),
+    last_update DATETIME,
+    row_hash    VARBINARY(32),
+    CONSTRAINT PK_stage_customer_order PRIMARY KEY (customer_id, order_id)
+);
+
+
+3.Mapping (theoretical)
+
+From raw → stage:
+
+
+| Stage Column | Source                                                  |
+| ------------ | ------------------------------------------------------- |
+| customer_id  | raw_customer.customer_id                                |
+| order_id     | raw_order.order_id                                      |
+| full_name    | first_name + ' ' + last_name                            |
+| email        | raw_customer.email                                      |
+| city         | raw_customer.city                                       |
+| order_date   | raw_order.order_date                                    |
+| amount       | raw_order.amount                                        |
+| status       | raw_order.status                                        |
+| last_update  | GREATEST(raw_customer.updated_at, raw_order.updated_at) |
+| row_hash     | HASH of business columns                                |
+
+
+4.MERGE into staging table (Upsert + Dedup)
+
+Rules:
+
+If not matched → INSERT (new data)
+
+If matched but hash changed → UPDATE (updated data)
+
+If matched and hash same → DO NOTHING (duplicate)
+
+CREATE OR ALTER PROCEDURE dbo.usp_load_stage_customer_order
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    MERGE dbo.stage_customer_order AS tgt
+    USING (
+        SELECT
+            c.customer_id,
+            o.order_id,
+            c.first_name + ' ' + c.last_name AS full_name,
+            c.email,
+            c.city,
+            o.order_date,
+            o.amount,
+            o.status,
+            CASE 
+                WHEN c.updated_at > o.updated_at THEN c.updated_at 
+                ELSE o.updated_at 
+            END AS last_update,
+            HASHBYTES(
+                'SHA2_256',
+                CONCAT(
+                    c.first_name, '|', c.last_name, '|', c.email, '|', c.city, '|',
+                    o.order_date, '|', o.amount, '|', o.status
+                )
+            ) AS row_hash
+        FROM dbo.raw_customer c
+        JOIN dbo.raw_order o
+            ON c.customer_id = o.customer_id
+    ) AS src
+    ON (tgt.customer_id = src.customer_id AND tgt.order_id = src.order_id)
+
+    WHEN MATCHED 
+         AND tgt.row_hash <> src.row_hash THEN
+        UPDATE SET
+            tgt.full_name   = src.full_name,
+            tgt.email       = src.email,
+            tgt.city        = src.city,
+            tgt.order_date  = src.order_date,
+            tgt.amount      = src.amount,
+            tgt.status      = src.status,
+            tgt.last_update = src.last_update,
+            tgt.row_hash    = src.row_hash
+
+    WHEN NOT MATCHED BY TARGET THEN
+        INSERT (
+            customer_id,
+            order_id,
+            full_name,
+            email,
+            city,
+            order_date,
+            amount,
+            status,
+            last_update,
+            row_hash
+        )
+        VALUES (
+            src.customer_id,
+            src.order_id,
+            src.full_name,
+            src.email,
+            src.city,
+            src.order_date,
+            src.amount,
+            src.status,
+            src.last_update,
+            src.row_hash
+        );
+
+END;
+GO
+
+
+EXEC dbo.usp_load_stage_customer_order;
+
+
+
+5.New customer
+
+INSERT INTO dbo.raw_customer VALUES
+(3, 'Virat', 'Kohli', 'virat@test.com', 'Delhi', '2026-02-12');
+
+INSERT INTO dbo.raw_order VALUES
+(103, 3, '2026-02-12', 3000.00, 'NEW', '2026-02-12');
+
+
+
+6.Update customer
+UPDATE dbo.raw_customer
+SET city = 'Mumbai',
+    updated_at = '2026-02-15'
+WHERE customer_id = 1;
+
+UPDATE dbo.raw_order
+SET amount = 1800.00,
+    status = 'PAID',
+    updated_at = '2026-02-15'
+WHERE order_id = 101;
+
+
+7.Duplicate customers
+INSERT INTO dbo.raw_customer VALUES
+(1, 'Rohit', 'Sharma', 'RS@test.com', 'Hyderabad', '2026-02-01'),
+(2, 'Ravi',  'Kumar',  'ravi@test.com', 'Bangalore', '2026-02-01');
+
+INSERT INTO dbo.raw_order VALUES
+(101, 1, '2026-02-10', 1500.00, 'NEW', '2026-02-10'),
+(102, 2, '2026-02-11', 2200.00, 'NEW', '2026-02-11');
+
+
