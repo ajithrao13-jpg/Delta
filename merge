@@ -1,0 +1,171 @@
+CREATE TABLE raw_customers (
+    customer_id BIGINT,
+    customer_name VARCHAR(255),
+    department VARCHAR(100),
+    salary NUMERIC(10, 2),
+    loaded_timestamp DATETIME2 DEFAULT GETDATE()
+);
+ 
+CREATE TABLE raw_orders (
+    order_id BIGINT,
+    customer_id BIGINT,
+    order_amount NUMERIC(10, 2),
+    order_date DATE,
+    loaded_timestamp DATETIME2 DEFAULT GETDATE()
+);
+ 
+CREATE TABLE stage_customers_orders (
+    customer_id BIGINT NOT NULL,
+    customer_name VARCHAR(255),
+    department VARCHAR(100),
+    order_id BIGINT,
+    order_amount NUMERIC(10, 2),
+    order_date DATE,
+    loaded_timestamp DATETIME2 DEFAULT GETDATE(),
+    updated_timestamp DATETIME2
+);
+
+INSERT INTO raw_customers
+(customer_id, customer_name, department, salary)
+VALUES
+    (101, 'John Smith', 'Sales', 60000.00),
+    (102, 'Sarah Johnson', 'Marketing', 55000.00),
+    (103, 'Mike Brown', 'Engineering', 75000.00),
+    (104, 'Emily Davis', 'HR', 50000.00),
+    (105, 'David Wilson', 'Finance', 65000.00);
+ 
+INSERT INTO raw_orders
+(order_id, customer_id, order_amount, order_date)
+VALUES
+    (1001, 101, 5000.00, '2024-01-15'),
+    (1002, 102, 3500.00, '2024-01-18'),
+    (1003, 101, 7200.00, '2024-01-20'),
+    (1004, 103, 9800.00, '2024-01-22'),
+    (1005, 104, 2100.00, '2024-01-25');
+
+select * from raw_customers;
+select * from raw_orders;
+select * from stage_customers_orders;
+
+
+CREATE PROCEDURE sp_merge_customers_orders
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        MERGE stage_customers_orders AS target
+        USING (
+            SELECT
+                fc.customer_id,
+                fc.customer_name,
+                fc.department,
+                fo.order_id,
+                fo.order_amount,
+                fo.order_date,
+                GETDATE() AS loaded_timestamp
+            FROM (
+                SELECT
+                    customer_id,
+                    customer_name,
+                    department,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY customer_id
+                        ORDER BY loaded_timestamp DESC
+                    ) AS cust_rn
+                FROM raw_customers
+            ) fc
+            JOIN (
+                SELECT
+                    order_id,
+                    customer_id,
+                    order_amount,
+                    order_date,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY order_id
+                        ORDER BY loaded_timestamp DESC
+                    ) AS ord_rn
+                FROM raw_orders
+            ) fo
+                ON fc.customer_id = fo.customer_id
+            WHERE fc.cust_rn = 1
+              AND fo.ord_rn = 1
+        ) AS source
+        ON target.customer_id = source.customer_id
+           AND target.order_id = source.order_id
+
+        WHEN MATCHED AND (
+            ISNULL(target.customer_name,'') <> ISNULL(source.customer_name,'')
+            OR ISNULL(target.department,'') <> ISNULL(source.department,'')
+            OR ISNULL(target.order_amount,0) <> ISNULL(source.order_amount,0)
+            OR ISNULL(target.order_date,'1900-01-01') <> ISNULL(source.order_date,'1900-01-01')
+        )
+        THEN UPDATE SET
+            customer_name = source.customer_name,
+            department = source.department,
+            order_amount = source.order_amount,
+            order_date = source.order_date,
+            loaded_timestamp = source.loaded_timestamp,
+            updated_timestamp = GETDATE()
+
+        WHEN NOT MATCHED BY TARGET
+        THEN INSERT (
+            customer_id,
+            customer_name,
+            department,
+            order_id,
+            order_amount,
+            order_date,
+            loaded_timestamp,
+            updated_timestamp
+        )
+        VALUES (
+            source.customer_id,
+            source.customer_name,
+            source.department,
+            source.order_id,
+            source.order_amount,
+            source.order_date,
+            source.loaded_timestamp,
+            GETDATE()
+        );
+
+        COMMIT TRANSACTION;
+
+        PRINT 'MERGE completed successfully';
+
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0
+            ROLLBACK TRANSACTION;
+
+        THROW; -- better than RAISERROR in modern SQL Server
+    END CATCH
+END;
+
+EXEC sp_merge_customers_orders;
+
+
+INSERT INTO raw_customers
+(customer_id, customer_name, department, salary)
+VALUES
+    (108, 'John BRAVO', 'IT',68000.00);
+
+ 
+INSERT INTO raw_orders
+(order_id, customer_id, order_amount, order_date)
+VALUES
+    (1009, 108, 45000.00, '2024-01-15');
+
+
+INSERT INTO raw_orders
+(order_id, customer_id, order_amount, order_date)
+VALUES
+    (1001, 101, 45000.00, '2024-01-15');
+
+INSERT INTO raw_customers
+(customer_id, customer_name, department, salary)
+VALUES 
+(103, 'Mike Brown', 'Technical', 75000.00)
