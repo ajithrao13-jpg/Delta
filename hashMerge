@@ -1,3 +1,6 @@
+ALTER TABLE dbo.stage_customers_orders
+ADD row_hash VARBINARY(32) NULL;
+
 CREATE OR ALTER PROCEDURE dbo.sp_merge_customers_orders
 AS
 BEGIN
