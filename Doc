@@ -9,3 +9,19 @@ Generate Row Hash (SHA2_256)
 MERGE into Stage
    ↓
 Insert / Update based on Hash Comparison
+
+
+Step 5: MERGE Logic (Delta Processing)
+Match Condition
+(customer_id, order_id)
+Case 1: Record Exists + Hash Changed
+
+➡ UPDATE stage table
+
+Case 2: Record Does Not Exist
+
+➡ INSERT into stage
+
+Case 3: Record Exists + Hash Same
+
+➡ Do Nothing
