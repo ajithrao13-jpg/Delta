@@ -1,0 +1,106 @@
+CREATE OR ALTER PROCEDURE dbo.sp_merge_customers_orders
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        MERGE dbo.stage_customers_orders AS target
+        USING (
+            SELECT
+                fc.customer_id,
+                fc.customer_name,
+                fc.department,
+                fo.order_id,
+                fo.order_amount,
+                fo.order_date,
+                GETDATE() AS loaded_timestamp,
+
+                -- hash of "attributes" (exclude keys used in ON)
+                HASHBYTES(
+                    'SHA2_256',
+                    CONCAT(
+                        ISNULL(fc.customer_name, ''), '|',
+                        ISNULL(fc.department, ''), '|',
+                        -- order_amount -> stable string
+                        ISNULL(CONVERT(varchar(50), fo.order_amount), '0'), '|',
+                        -- order_date -> ISO 8601
+                        ISNULL(CONVERT(varchar(33), fo.order_date, 126), '1900-01-01')
+                    )
+                ) AS row_hash
+
+            FROM (
+                SELECT
+                    customer_id,
+                    customer_name,
+                    department,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY customer_id
+                        ORDER BY loaded_timestamp DESC
+                    ) AS cust_rn
+                FROM dbo.raw_customers
+            ) fc
+            JOIN (
+                SELECT
+                    order_id,
+                    customer_id,
+                    order_amount,
+                    order_date,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY order_id
+                        ORDER BY loaded_timestamp DESC
+                    ) AS ord_rn
+                FROM dbo.raw_orders
+            ) fo
+                ON fc.customer_id = fo.customer_id
+            WHERE fc.cust_rn = 1
+              AND fo.ord_rn = 1
+        ) AS source
+        ON target.customer_id = source.customer_id
+           AND target.order_id = source.order_id
+
+        WHEN MATCHED
+             AND ISNULL(target.row_hash, 0x00) <> source.row_hash
+        THEN UPDATE SET
+            customer_name      = source.customer_name,
+            department         = source.department,
+            order_amount       = source.order_amount,
+            order_date         = source.order_date,
+            loaded_timestamp   = source.loaded_timestamp,
+            updated_timestamp  = GETDATE(),
+            row_hash           = source.row_hash
+
+        WHEN NOT MATCHED BY TARGET
+        THEN INSERT (
+            customer_id,
+            customer_name,
+            department,
+            order_id,
+            order_amount,
+            order_date,
+            loaded_timestamp,
+            updated_timestamp,
+            row_hash
+        )
+        VALUES (
+            source.customer_id,
+            source.customer_name,
+            source.department,
+            source.order_id,
+            source.order_amount,
+            source.order_date,
+            source.loaded_timestamp,
+            GETDATE(),
+            source.row_hash
+        );
+
+        COMMIT TRANSACTION;
+        PRINT 'MERGE completed successfully';
+
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END;
