@@ -1,0 +1,11 @@
+Raw Tables
+   ↓
+Pick Latest Records (ROW_NUMBER)
+   ↓
+Join Customers + Orders
+   ↓
+Generate Row Hash (SHA2_256)
+   ↓
+MERGE into Stage
+   ↓
+Insert / Update based on Hash Comparison
