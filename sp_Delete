@@ -1,0 +1,8 @@
+WITH cte AS
+(
+    SELECT *,
+           ROW_NUMBER() OVER (ORDER BY load_timestamp DESC) AS rn
+    FROM dbo.RAW_CLN_AFS_TAKEDOWN
+)
+DELETE FROM cte
+WHERE rn > 1000;
