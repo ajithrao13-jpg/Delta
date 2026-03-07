@@ -1,3 +1,18 @@
+-------hash registry-----
+CREATE TABLE dbo.hash_registry
+(
+    entity_name        VARCHAR(100) NOT NULL,
+    row_hash           VARBINARY(32) NOT NULL,
+    created_timestamp  DATETIME2(7) NOT NULL DEFAULT SYSUTCDATETIME(),
+    updated_timestamp  DATETIME2(7) NOT NULL DEFAULT SYSUTCDATETIME()
+);
+GO
+
+CREATE UNIQUE INDEX UX_hash_registry
+ON dbo.hash_registry (entity_name, row_hash);
+GO
+--------------------
+
 -------------target table---------------------
 SET ANSI_NULLS ON;
 GO
@@ -44,42 +59,7 @@ BEGIN
     DECLARE @current_timestamp DATETIME2(7) = SYSUTCDATETIME();
 
     ------------------------------------------------
-    -- STEP 1 : Generate hashes for staging records
-    ------------------------------------------------
-    ;WITH staging_hash AS
-    (
-        SELECT
-            s.ID,
-            s.tkdnloanbank,
-            s.tkdnloanoblr,
-            s.tkdnloanobln,
-            s.tkdnloantypes,
-            s.tkdnloantkdnlvl,
-            s.tkdnhlfbank,
-            s.tkdnhlfoblr,
-            s.tkdnhlfobln,
-            s.PACKAGE_ID,
-            s.STAGING_ID,
-            s.SYSTEM_DATETIME,
-            HASHBYTES
-            (
-                'SHA2_256',
-                CONCAT(
-                    ISNULL(s.tkdnloanbank, ''), '|',
-                    ISNULL(s.tkdnloanoblr, ''), '|',
-                    ISNULL(s.tkdnloanobln, ''), '|',
-                    ISNULL(s.tkdnloantypes, ''), '|',
-                    ISNULL(s.tkdnloantkdnlvl, ''), '|',
-                    ISNULL(s.tkdnhlfbank, ''), '|',
-                    ISNULL(s.tkdnhlfoblr, ''), '|',
-                    ISNULL(s.tkdnhlfobln, '')
-                )
-            ) AS row_hash
-        FROM dbo.cln_takedown_staging s
-    )
-
-    ------------------------------------------------
-    -- STEP 2 : First batch handling
+    -- STEP 1 : First batch handling
     ------------------------------------------------
     IF NOT EXISTS
     (
@@ -104,18 +84,18 @@ BEGIN
             SYSTEM_DATETIME
         )
         SELECT
-            sh.tkdnloanbank,
-            sh.tkdnloanoblr,
-            sh.tkdnloanobln,
-            sh.tkdnloantypes,
-            sh.tkdnloantkdnlvl,
-            sh.tkdnhlfbank,
-            sh.tkdnhlfoblr,
-            sh.tkdnhlfobln,
-            sh.PACKAGE_ID,
-            sh.STAGING_ID,
-            sh.SYSTEM_DATETIME
-        FROM staging_hash sh;
+            s.tkdnloanbank,
+            s.tkdnloanoblr,
+            s.tkdnloanobln,
+            s.tkdnloantypes,
+            s.tkdnloantkdnlvl,
+            s.tkdnhlfbank,
+            s.tkdnhlfoblr,
+            s.tkdnhlfobln,
+            s.PACKAGE_ID,
+            s.STAGING_ID,
+            s.SYSTEM_DATETIME
+        FROM dbo.cln_takedown_staging s;
 
         -- Insert all hashes into registry
         INSERT INTO dbo.hash_registry
@@ -127,32 +107,6 @@ BEGIN
         )
         SELECT DISTINCT
             @entity_name,
-            sh.row_hash,
-            @current_timestamp,
-            @current_timestamp
-        FROM staging_hash sh;
-
-        RETURN;
-    END;
-
-    ------------------------------------------------
-    -- STEP 3 : Insert new / changed records
-    ------------------------------------------------
-    ;WITH staging_hash AS
-    (
-        SELECT
-            s.ID,
-            s.tkdnloanbank,
-            s.tkdnloanoblr,
-            s.tkdnloanobln,
-            s.tkdnloantypes,
-            s.tkdnloantkdnlvl,
-            s.tkdnhlfbank,
-            s.tkdnhlfoblr,
-            s.tkdnhlfobln,
-            s.PACKAGE_ID,
-            s.STAGING_ID,
-            s.SYSTEM_DATETIME,
             HASHBYTES
             (
                 'SHA2_256',
@@ -166,9 +120,17 @@ BEGIN
                     ISNULL(s.tkdnhlfoblr, ''), '|',
                     ISNULL(s.tkdnhlfobln, '')
                 )
-            ) AS row_hash
-        FROM dbo.cln_takedown_staging s
-    )
+            ),
+            @current_timestamp,
+            @current_timestamp
+        FROM dbo.cln_takedown_staging s;
+
+        RETURN;
+    END;
+
+    ------------------------------------------------
+    -- STEP 2 : Insert new / changed rows into target
+    ------------------------------------------------
     INSERT INTO dbo.cln_takedown_target
     (
         tkdnloanbank,
@@ -184,30 +146,21 @@ BEGIN
         SYSTEM_DATETIME
     )
     SELECT
-        sh.tkdnloanbank,
-        sh.tkdnloanoblr,
-        sh.tkdnloanobln,
-        sh.tkdnloantypes,
-        sh.tkdnloantkdnlvl,
-        sh.tkdnhlfbank,
-        sh.tkdnhlfoblr,
-        sh.tkdnhlfobln,
-        sh.PACKAGE_ID,
-        sh.STAGING_ID,
-        sh.SYSTEM_DATETIME
-    FROM staging_hash sh
+        s.tkdnloanbank,
+        s.tkdnloanoblr,
+        s.tkdnloanobln,
+        s.tkdnloantypes,
+        s.tkdnloantkdnlvl,
+        s.tkdnhlfbank,
+        s.tkdnhlfoblr,
+        s.tkdnhlfobln,
+        s.PACKAGE_ID,
+        s.STAGING_ID,
+        s.SYSTEM_DATETIME
+    FROM dbo.cln_takedown_staging s
     LEFT JOIN dbo.hash_registry hr
         ON hr.entity_name = @entity_name
-       AND hr.row_hash = sh.row_hash
-    WHERE hr.row_hash IS NULL;
-
-    ------------------------------------------------
-    -- STEP 4 : Insert new hashes
-    ------------------------------------------------
-    ;WITH staging_hash AS
-    (
-        SELECT
-            HASHBYTES
+       AND hr.row_hash = HASHBYTES
             (
                 'SHA2_256',
                 CONCAT(
@@ -220,9 +173,12 @@ BEGIN
                     ISNULL(s.tkdnhlfoblr, ''), '|',
                     ISNULL(s.tkdnhlfobln, '')
                 )
-            ) AS row_hash
-        FROM dbo.cln_takedown_staging s
-    )
+            )
+    WHERE hr.row_hash IS NULL;
+
+    ------------------------------------------------
+    -- STEP 3 : Insert new hashes into registry
+    ------------------------------------------------
     INSERT INTO dbo.hash_registry
     (
         entity_name,
@@ -232,22 +188,26 @@ BEGIN
     )
     SELECT DISTINCT
         @entity_name,
-        sh.row_hash,
+        HASHBYTES
+        (
+            'SHA2_256',
+            CONCAT(
+                ISNULL(s.tkdnloanbank, ''), '|',
+                ISNULL(s.tkdnloanoblr, ''), '|',
+                ISNULL(s.tkdnloanobln, ''), '|',
+                ISNULL(s.tkdnloantypes, ''), '|',
+                ISNULL(s.tkdnloantkdnlvl, ''), '|',
+                ISNULL(s.tkdnhlfbank, ''), '|',
+                ISNULL(s.tkdnhlfoblr, ''), '|',
+                ISNULL(s.tkdnhlfobln, '')
+            )
+        ),
         @current_timestamp,
         @current_timestamp
-    FROM staging_hash sh
+    FROM dbo.cln_takedown_staging s
     LEFT JOIN dbo.hash_registry hr
         ON hr.entity_name = @entity_name
-       AND hr.row_hash = sh.row_hash
-    WHERE hr.row_hash IS NULL;
-
-    ------------------------------------------------
-    -- STEP 5 : Update timestamps for unchanged rows
-    ------------------------------------------------
-    ;WITH staging_hash AS
-    (
-        SELECT
-            HASHBYTES
+       AND hr.row_hash = HASHBYTES
             (
                 'SHA2_256',
                 CONCAT(
@@ -260,18 +220,34 @@ BEGIN
                     ISNULL(s.tkdnhlfoblr, ''), '|',
                     ISNULL(s.tkdnhlfobln, '')
                 )
-            ) AS row_hash
-        FROM dbo.cln_takedown_staging s
-    )
-    UPDATE hr
-    SET updated_timestamp = @current_timestamp
-    FROM dbo.hash_registry hr
-    INNER JOIN staging_hash sh
-        ON hr.row_hash = sh.row_hash
-    WHERE hr.entity_name = @entity_name;
+            )
+    WHERE hr.row_hash IS NULL;
 
     ------------------------------------------------
-    -- STEP 6 : Keep only latest batch hashes
+    -- STEP 4 : Update timestamp for unchanged hashes
+    ------------------------------------------------
+    UPDATE hr
+    SET hr.updated_timestamp = @current_timestamp
+    FROM dbo.hash_registry hr
+    INNER JOIN dbo.cln_takedown_staging s
+        ON hr.entity_name = @entity_name
+       AND hr.row_hash = HASHBYTES
+            (
+                'SHA2_256',
+                CONCAT(
+                    ISNULL(s.tkdnloanbank, ''), '|',
+                    ISNULL(s.tkdnloanoblr, ''), '|',
+                    ISNULL(s.tkdnloanobln, ''), '|',
+                    ISNULL(s.tkdnloantypes, ''), '|',
+                    ISNULL(s.tkdnloantkdnlvl, ''), '|',
+                    ISNULL(s.tkdnhlfbank, ''), '|',
+                    ISNULL(s.tkdnhlfoblr, ''), '|',
+                    ISNULL(s.tkdnhlfobln, '')
+                )
+            );
+
+    ------------------------------------------------
+    -- STEP 5 : Delete hashes not seen in current batch
     ------------------------------------------------
     DELETE FROM dbo.hash_registry
     WHERE entity_name = @entity_name
