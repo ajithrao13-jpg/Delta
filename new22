@@ -1,0 +1,15 @@
+SELECT 
+'INSERT INTO dbo.RAW_CLN_AFS_TAKEDOWN
+(PACKAGE_ID, tkdn_loan_bank, tkdn_loan_oblr, tkdn_loan_obln, tkdn_loan_types, tkdn_loan_tkdn_lvl, tkdn_hlf_bank, tkdn_hlf_obln, SYSTEM_DATETIME)
+VALUES (' 
++ CAST(PACKAGE_ID AS VARCHAR) + ','
++ CAST(tkdn_loan_bank AS VARCHAR) + ','''
++ tkdn_loan_oblr + ''','''
++ tkdn_loan_obln + ''','
++ CAST(tkdn_loan_types AS VARCHAR) + ','
++ CAST(tkdn_loan_tkdn_lvl AS VARCHAR) + ','
++ CAST(tkdn_hlf_bank AS VARCHAR) + ','''
++ tkdn_hlf_obln + ''','''
++ CONVERT(VARCHAR, SYSTEM_DATETIME, 120) + ''');'
+FROM dbo.RAW_CLN_AFS_TAKEDOWN
+ORDER BY ID;
