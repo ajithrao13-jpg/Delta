@@ -2,16 +2,16 @@ SELECT
 'INSERT INTO dbo.cln_takedown_staging
 (tkdnloanbank, tkdnloanoblr, tkdnloanobln, tkdnloantypes, tkdnloantkdnlvl, tkdnhlfbank, tkdnhlfoblr, tkdnhlfobln, PACKAGE_ID, STAGING_ID)
 VALUES (''' 
-+ tkdnloanbank + ''','''
-+ tkdnloanoblr + ''','''
-+ tkdnloanobln + ''','''
-+ tkdnloantypes + ''','''
-+ tkdnloantkdnlvl + ''','''
-+ tkdnhlfbank + ''','''
-+ tkdnhlfoblr + ''','''
-+ tkdnhlfobln + ''',' 
++ ISNULL(tkdnloanbank,'') + ''','''
++ ISNULL(tkdnloanoblr,'') + ''','''
++ ISNULL(tkdnloanobln,'') + ''','''
++ ISNULL(tkdnloantypes,'') + ''','''
++ ISNULL(tkdnloantkdnlvl,'') + ''','''
++ ISNULL(tkdnhlfbank,'') + ''','''
++ ISNULL(tkdnhlfoblr,'') + ''','''
++ ISNULL(tkdnhlfobln,'') + ''',' 
 + CAST(PACKAGE_ID AS VARCHAR) + ',' 
-+ ISNULL(CAST(STAGING_ID AS VARCHAR),'NULL') 
++ ISNULL(CAST(STAGING_ID AS VARCHAR),'NULL')
 + ');'
 FROM dbo.cln_takedown_staging
 ORDER BY ID;
