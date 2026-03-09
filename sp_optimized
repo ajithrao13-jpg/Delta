@@ -1,0 +1,147 @@
+CREATE OR ALTER PROCEDURE dbo.sp_process_cln_takedown
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @entity_name VARCHAR(100) = 'cln_takedown';
+    DECLARE @current_timestamp DATETIME2(7) = SYSUTCDATETIME();
+
+    ------------------------------------------------
+    -- STEP 1: Create temp staging with hash
+    ------------------------------------------------
+
+    IF OBJECT_ID('tempdb..#staging_hash') IS NOT NULL
+        DROP TABLE #staging_hash;
+
+    SELECT
+        s.tkdnloanbank,
+        s.tkdnloanoblr,
+        s.tkdnloanobln,
+        s.tkdnloantypes,
+        s.tkdnloantkdnlvl,
+        s.tkdnhlfbank,
+        s.tkdnhlfoblr,
+        s.tkdnhlfobln,
+        s.PACKAGE_ID,
+        s.STAGING_ID,
+        s.SYSTEM_DATETIME,
+
+        HASHBYTES(
+            'SHA2_256',
+            CONCAT(
+                ISNULL(s.tkdnloanbank,''),'|',
+                ISNULL(s.tkdnloanoblr,''),'|',
+                ISNULL(s.tkdnloanobln,''),'|',
+                ISNULL(s.tkdnloantypes,''),'|',
+                ISNULL(s.tkdnloantkdnlvl,''),'|',
+                ISNULL(s.tkdnhlfbank,''),'|',
+                ISNULL(s.tkdnhlfoblr,''),'|',
+                ISNULL(s.tkdnhlfobln,'')
+            )
+        ) AS row_hash
+
+    INTO #staging_hash
+    FROM dbo.cln_takedown_staging s
+    WITH (NOLOCK);
+
+
+    ------------------------------------------------
+    -- STEP 2: Create index on temp table
+    ------------------------------------------------
+
+    CREATE NONCLUSTERED INDEX IX_staging_hash
+    ON #staging_hash(row_hash);
+
+
+    ------------------------------------------------
+    -- STEP 3: Identify NEW rows
+    ------------------------------------------------
+
+    IF OBJECT_ID('tempdb..#new_rows') IS NOT NULL
+        DROP TABLE #new_rows;
+
+    SELECT s.*
+    INTO #new_rows
+    FROM #staging_hash s
+    LEFT JOIN dbo.hash_registry hr
+        ON hr.entity_name = @entity_name
+       AND hr.row_hash = s.row_hash
+    WHERE hr.row_hash IS NULL;
+
+
+    ------------------------------------------------
+    -- STEP 4: Insert new rows into TARGET
+    ------------------------------------------------
+
+    INSERT INTO dbo.cln_takedown_target
+    (
+        tkdnloanbank,
+        tkdnloanoblr,
+        tkdnloanobln,
+        tkdnloantypes,
+        tkdnloantkdnlvl,
+        tkdnhlfbank,
+        tkdnhlfoblr,
+        tkdnhlfobln,
+        PACKAGE_ID,
+        STAGING_ID,
+        SYSTEM_DATETIME
+    )
+    SELECT
+        tkdnloanbank,
+        tkdnloanoblr,
+        tkdnloanobln,
+        tkdnloantypes,
+        tkdnloantkdnlvl,
+        tkdnhlfbank,
+        tkdnhlfoblr,
+        tkdnhlfobln,
+        PACKAGE_ID,
+        STAGING_ID,
+        SYSTEM_DATETIME
+    FROM #new_rows;
+
+
+    ------------------------------------------------
+    -- STEP 5: MERGE registry (Enterprise pattern)
+    ------------------------------------------------
+
+    MERGE dbo.hash_registry AS target
+    USING
+    (
+        SELECT row_hash
+        FROM #staging_hash
+    ) AS source
+
+    ON target.entity_name = @entity_name
+    AND target.row_hash = source.row_hash
+
+    WHEN MATCHED THEN
+        UPDATE SET
+            updated_timestamp = @current_timestamp
+
+    WHEN NOT MATCHED BY TARGET THEN
+        INSERT
+        (
+            entity_name,
+            row_hash,
+            created_timestamp,
+            updated_timestamp
+        )
+        VALUES
+        (
+            @entity_name,
+            source.row_hash,
+            @current_timestamp,
+            @current_timestamp
+        )
+
+    WHEN NOT MATCHED BY SOURCE
+        AND target.entity_name = @entity_name
+    THEN DELETE;
+
+END;
+GO
+
+CREATE NONCLUSTERED INDEX IX_hash_registry_entity_hash
+ON dbo.hash_registry(entity_name, row_hash);
