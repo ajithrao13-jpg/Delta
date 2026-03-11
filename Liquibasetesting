@@ -1,0 +1,17 @@
+<changeSet id="test-procedure-1" author="dev" context="dev">
+
+    <sql>
+        INSERT INTO employee(id,salary,bonus) VALUES (1,10000,0);
+    </sql>
+
+    <sql>
+        CALL update_bonus();
+    </sql>
+
+    <preConditions onFail="HALT">
+        <sqlCheck expectedResult="1000">
+            SELECT bonus FROM employee WHERE id=1
+        </sqlCheck>
+    </preConditions>
+
+</changeSet>
